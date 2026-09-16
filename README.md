@@ -256,6 +256,19 @@ The Z-API integration uses its native delay capability for regular text messages
 
 ---
 
+## WhatsApp Delivery
+
+The final output is intentionally simple from the customer's perspective.
+
+The pipeline consolidates the relevant collection events into a single customer communication and sends each payment code separately using WhatsApp's native **Copy code** interaction.
+
+Below is an example produced by the pipeline through the Z-API integration:
+
+![WhatsApp collection message example](docs/messageExample.png)
+
+---
+
+
 ## Galax Pay Integration
 
 The real Galax Pay client handles:
