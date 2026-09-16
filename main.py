@@ -22,7 +22,8 @@ from src.queue.debt_queue_repository import DebtQueueRepository
 from src.queue.message_queue_repository import MessageQueueRepository
 
 
-DATABASE_PATH = "collection_pipeline.db"
+DEFAULT_DATABASE_PATH = "collection_pipeline.db"
+WHATSAPP_DATABASE_PATH = "collection_pipeline_whatsapp.db"
 
 
 def main() -> None:
@@ -38,8 +39,16 @@ def main() -> None:
         "demo",
     ).lower()
 
+    # WhatsApp integration tests use a separate database so real delivery tests
+    # do not interfere with the state and idempotency of regular demo runs.
+    database_path = (
+        WHATSAPP_DATABASE_PATH
+        if pipeline_mode == "whatsapp"
+        else DEFAULT_DATABASE_PATH
+    )
+
     # External dependencies are selected only at the composition root.
-    # The core pipeline remains identical in demo and real execution modes.
+    # The core pipeline remains identical regardless of which adapters are used.
     if pipeline_mode == "demo":
         demo_phone = os.getenv(
             "DEMO_PHONE",
@@ -51,6 +60,22 @@ def main() -> None:
         )
 
         zapi_client = MockZApiClient()
+
+    elif pipeline_mode == "whatsapp":
+        # This mode keeps the source data mocked while exercising the real
+        # WhatsApp integration. An explicit phone number is required because
+        # the pipeline will perform a real external delivery.
+        demo_phone = os.environ["DEMO_PHONE"]
+
+        galaxpay_client = MockGalaxPayClient(
+            demo_phone=demo_phone
+        )
+
+        zapi_client = RealZApiClient(
+            instance_id=os.environ["ZAPI_INSTANCE_ID"],
+            instance_token=os.environ["ZAPI_INSTANCE_TOKEN"],
+            client_token=os.environ["ZAPI_CLIENT_TOKEN"],
+        )
 
     elif pipeline_mode == "real":
         galaxpay_client = RealGalaxPayClient(
@@ -66,17 +91,17 @@ def main() -> None:
 
     else:
         raise ValueError(
-            "PIPELINE_MODE must be either 'demo' or 'real'."
+            "PIPELINE_MODE must be 'demo', 'whatsapp', or 'real'."
         )
 
     # Both queues share the same SQLite database so the handoff between them
     # can be committed atomically by the MessageQueueRepository.
     debt_queue_repository = DebtQueueRepository(
-        DATABASE_PATH
+        database_path
     )
 
     message_queue_repository = MessageQueueRepository(
-        DATABASE_PATH
+        database_path
     )
 
     # Application components depend on abstractions/repositories rather than
@@ -115,6 +140,7 @@ def main() -> None:
 
     print()
     print(f"Pipeline mode: {pipeline_mode.upper()}")
+    print(f"Database: {database_path}")
     print("Pipeline completed.")
     print(f"Transactions retrieved: {len(transactions)}")
     print(f"New collection events queued: {debt_events_queued}")

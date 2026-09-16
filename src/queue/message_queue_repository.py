@@ -2,7 +2,8 @@
 Provides persistent storage for collection message queue items.
 
 The repository persists fully prepared customer communications and guarantees
-that message creation and source debt completion happen atomically.
+that message creation, source debt completion, and collection tracking records
+are created atomically.
 """
 
 import json
@@ -46,6 +47,34 @@ class MessageQueueRepository:
                 """
             )
 
+            # Reporting is debt-oriented even though delivery is message-oriented.
+            # Each row represents one collectible debt event and records the
+            # communication responsible for delivering that collection notice.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS collection_tracking (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    galaxpay_transaction_id INTEGER NOT NULL,
+                    customer_id INTEGER NOT NULL,
+                    customer_name TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL,
+                    due_date TEXT NOT NULL,
+                    collection_day INTEGER NOT NULL,
+
+                    collection_event_key TEXT NOT NULL UNIQUE,
+
+                    message_id TEXT NOT NULL,
+                    message_status TEXT NOT NULL,
+                    message_sent_at TEXT,
+                    message_last_error TEXT,
+
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
     def enqueue_and_complete_source_events(
         self,
         item: MessageQueueItem,
@@ -66,12 +95,13 @@ class MessageQueueRepository:
 
         with self._get_connection() as connection:
             try:
-                # Both operations belong to one logical transaction:
+                # These operations belong to one logical transaction:
                 #
                 # 1. responsibility for delivery moves to the message queue;
-                # 2. the originating debt events are considered completed.
+                # 2. the originating debt events are considered completed;
+                # 3. one tracking record is created for each collection event.
                 #
-                # If either operation fails, neither state change is committed.
+                # If any operation fails, none of the state changes are committed.
                 cursor = connection.execute(
                     """
                     INSERT INTO message_queue (
@@ -112,6 +142,37 @@ class MessageQueueRepository:
                     "?" for _ in item.source_event_keys
                 )
 
+                # Read the source events before changing their processing state.
+                # These records provide the debt-level business data used by the
+                # collection tracking table.
+                source_rows = connection.execute(
+                    f"""
+                    SELECT
+                        galaxpay_transaction_id,
+                        customer_id,
+                        customer_name,
+                        amount_cents,
+                        due_date,
+                        collection_day,
+                        idempotency_key
+                    FROM debt_queue
+                    WHERE
+                        idempotency_key IN ({placeholders})
+                        AND status = ?
+                    """,
+                    (
+                        *item.source_event_keys,
+                        QueueStatus.PENDING.value,
+                    ),
+                ).fetchall()
+
+                # Every event represented in the message must still be available
+                # for transfer. Otherwise the transaction would be inconsistent.
+                if len(source_rows) != len(item.source_event_keys):
+                    raise RuntimeError(
+                        "Not all source debt events could be completed."
+                    )
+
                 # Only pending source events may be consumed by the dispatcher.
                 # This protects already completed events from being modified again.
                 update_cursor = connection.execute(
@@ -140,12 +201,52 @@ class MessageQueueRepository:
                         "Not all source debt events could be completed."
                     )
 
+                # Reporting keeps debt events as its unit of analysis.
+                # Multiple debt events may therefore reference the same message.
+                for row in source_rows:
+                    connection.execute(
+                        """
+                        INSERT INTO collection_tracking (
+                            galaxpay_transaction_id,
+                            customer_id,
+                            customer_name,
+                            amount_cents,
+                            due_date,
+                            collection_day,
+                            collection_event_key,
+                            message_id,
+                            message_status,
+                            message_sent_at,
+                            message_last_error,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row[0],
+                            row[1],
+                            row[2],
+                            row[3],
+                            row[4],
+                            row[5],
+                            row[6],
+                            item.idempotency_key,
+                            QueueStatus.PENDING.value,
+                            None,
+                            None,
+                            now.isoformat(),
+                            now.isoformat(),
+                        ),
+                    )
+
                 connection.commit()
                 return True
 
             except Exception:
                 # Explicit rollback makes the atomic boundary visible:
-                # either the message and all source updates succeed, or none do.
+                # message creation, source completion, and tracking creation
+                # either all succeed or none of them do.
                 connection.rollback()
                 raise
 
@@ -208,21 +309,48 @@ class MessageQueueRepository:
         now = datetime.now()
 
         with self._get_connection() as connection:
-            connection.execute(
-                """
-                UPDATE message_queue
-                SET
-                    status = ?,
-                    updated_at = ?,
-                    last_error = NULL
-                WHERE idempotency_key = ?
-                """,
-                (
-                    QueueStatus.PROCESSED.value,
-                    now.isoformat(),
-                    idempotency_key,
-                ),
-            )
+            try:
+                # Delivery state is updated both at message level and at the
+                # debt-oriented tracking level within the same transaction.
+                connection.execute(
+                    """
+                    UPDATE message_queue
+                    SET
+                        status = ?,
+                        updated_at = ?,
+                        last_error = NULL
+                    WHERE idempotency_key = ?
+                    """,
+                    (
+                        QueueStatus.PROCESSED.value,
+                        now.isoformat(),
+                        idempotency_key,
+                    ),
+                )
+
+                connection.execute(
+                    """
+                    UPDATE collection_tracking
+                    SET
+                        message_status = ?,
+                        message_sent_at = ?,
+                        message_last_error = NULL,
+                        updated_at = ?
+                    WHERE message_id = ?
+                    """,
+                    (
+                        QueueStatus.PROCESSED.value,
+                        now.isoformat(),
+                        now.isoformat(),
+                        idempotency_key,
+                    ),
+                )
+
+                connection.commit()
+
+            except Exception:
+                connection.rollback()
+                raise
 
     def mark_as_failed(
         self,
@@ -232,19 +360,44 @@ class MessageQueueRepository:
         now = datetime.now()
 
         with self._get_connection() as connection:
-            connection.execute(
-                """
-                UPDATE message_queue
-                SET
-                    status = ?,
-                    updated_at = ?,
-                    last_error = ?
-                WHERE idempotency_key = ?
-                """,
-                (
-                    QueueStatus.FAILED.value,
-                    now.isoformat(),
-                    error_message,
-                    idempotency_key,
-                ),
-            )
+            try:
+                connection.execute(
+                    """
+                    UPDATE message_queue
+                    SET
+                        status = ?,
+                        updated_at = ?,
+                        last_error = ?
+                    WHERE idempotency_key = ?
+                    """,
+                    (
+                        QueueStatus.FAILED.value,
+                        now.isoformat(),
+                        error_message,
+                        idempotency_key,
+                    ),
+                )
+
+                connection.execute(
+                    """
+                    UPDATE collection_tracking
+                    SET
+                        message_status = ?,
+                        message_sent_at = NULL,
+                        message_last_error = ?,
+                        updated_at = ?
+                    WHERE message_id = ?
+                    """,
+                    (
+                        QueueStatus.FAILED.value,
+                        error_message,
+                        now.isoformat(),
+                        idempotency_key,
+                    ),
+                )
+
+                connection.commit()
+
+            except Exception:
+                connection.rollback()
+                raise

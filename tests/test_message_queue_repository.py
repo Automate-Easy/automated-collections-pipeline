@@ -2,10 +2,11 @@
 Tests the transactional behavior of the collection message queue.
 
 The tests verify that transferring responsibility from the debt queue to the
-message queue happens atomically: either every source event is completed and
-the message is persisted, or no state change is committed.
+message queue happens atomically and that message delivery results are
+correctly projected into debt-oriented collection tracking records.
 """
 
+import sqlite3
 from datetime import date
 
 import pytest
@@ -142,3 +143,154 @@ def test_rolls_back_message_when_a_source_event_cannot_be_completed(tmp_path):
 
     # Most importantly, no orphan message may remain in the second queue.
     assert message_repository.get_pending_items() == []
+
+
+def test_creates_one_tracking_record_per_source_debt_event(tmp_path):
+    database_path = tmp_path / "test.db"
+
+    debt_repository = DebtQueueRepository(str(database_path))
+    message_repository = MessageQueueRepository(str(database_path))
+
+    # Three independent collection events belong to the same customer.
+    debt_repository.enqueue(
+        create_debt_queue_item(1001, 501, "1001:0")
+    )
+    debt_repository.enqueue(
+        create_debt_queue_item(1002, 501, "1002:0")
+    )
+    debt_repository.enqueue(
+        create_debt_queue_item(1003, 501, "1003:0")
+    )
+
+    message = create_message_queue_item(
+        ["1001:0", "1002:0", "1003:0"]
+    )
+
+    result = message_repository.enqueue_and_complete_source_events(message)
+
+    assert result is True
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                galaxpay_transaction_id,
+                customer_id,
+                collection_event_key,
+                message_id,
+                message_status,
+                message_sent_at,
+                message_last_error
+            FROM collection_tracking
+            ORDER BY galaxpay_transaction_id
+            """
+        ).fetchall()
+
+    # Reporting remains debt-oriented even though all three debt events were
+    # consolidated into a single customer communication.
+    assert len(rows) == 3
+
+    assert [row[0] for row in rows] == [1001, 1002, 1003]
+    assert all(row[1] == 501 for row in rows)
+
+    assert [row[2] for row in rows] == [
+        "1001:0",
+        "1002:0",
+        "1003:0",
+    ]
+
+    # All debt events point to the same prepared communication.
+    assert all(row[3] == "message-test-001" for row in rows)
+    assert all(row[4] == "PENDING" for row in rows)
+    assert all(row[5] is None for row in rows)
+    assert all(row[6] is None for row in rows)
+
+
+def test_propagates_successful_message_delivery_to_collection_tracking(
+    tmp_path,
+):
+    database_path = tmp_path / "test.db"
+
+    debt_repository = DebtQueueRepository(str(database_path))
+    message_repository = MessageQueueRepository(str(database_path))
+
+    debt_repository.enqueue(
+        create_debt_queue_item(1001, 501, "1001:0")
+    )
+    debt_repository.enqueue(
+        create_debt_queue_item(1002, 501, "1002:0")
+    )
+
+    message = create_message_queue_item(
+        ["1001:0", "1002:0"]
+    )
+
+    message_repository.enqueue_and_complete_source_events(message)
+    message_repository.mark_as_processed(message.idempotency_key)
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                collection_event_key,
+                message_status,
+                message_sent_at,
+                message_last_error
+            FROM collection_tracking
+            ORDER BY collection_event_key
+            """
+        ).fetchall()
+
+    assert len(rows) == 2
+
+    assert all(row[1] == "PROCESSED" for row in rows)
+    assert all(row[2] is not None for row in rows)
+    assert all(row[3] is None for row in rows)
+
+
+def test_propagates_failed_message_delivery_to_collection_tracking(
+    tmp_path,
+):
+    database_path = tmp_path / "test.db"
+
+    debt_repository = DebtQueueRepository(str(database_path))
+    message_repository = MessageQueueRepository(str(database_path))
+
+    debt_repository.enqueue(
+        create_debt_queue_item(1001, 501, "1001:0")
+    )
+    debt_repository.enqueue(
+        create_debt_queue_item(1002, 501, "1002:0")
+    )
+
+    message = create_message_queue_item(
+        ["1001:0", "1002:0"]
+    )
+
+    message_repository.enqueue_and_complete_source_events(message)
+
+    error_message = "Z-API returned HTTP 503."
+
+    message_repository.mark_as_failed(
+        message.idempotency_key,
+        error_message,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                collection_event_key,
+                message_status,
+                message_sent_at,
+                message_last_error
+            FROM collection_tracking
+            ORDER BY collection_event_key
+            """
+        ).fetchall()
+
+    assert len(rows) == 2
+
+    assert all(row[1] == "FAILED" for row in rows)
+    assert all(row[2] is None for row in rows)
+    assert all(row[3] == error_message for row in rows)
