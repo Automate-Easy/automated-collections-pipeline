@@ -16,6 +16,32 @@ The implementation intentionally avoids RPA platforms so the underlying software
 
 ---
 
+## Business Context — Where My Automation Career Started
+
+This project has a special meaning to me because it reconstructs the architecture behind the **first automation I ever built**.
+
+At the time, I was an intern at a small company, and the collections team had a major operational problem: contacting customers was almost entirely manual. Completing a full collection cycle across the customer base could take weeks.
+
+WhatsApp was the natural communication channel because it is the dominant instant messaging platform in Brazil. However, using the official API at the time was both expensive and relatively complex for a small company. The original solution therefore used a third-party WhatsApp API.
+
+This decision had a significant impact on cost. With a volume of approximately **12,000 messages per month**, a per-message model at roughly **R$0.40 per message** would represent around **R$4,800 per month**. The selected integration instead operated at a fixed cost of approximately **R$90 per month**.
+
+But the largest impact was operational.
+
+Before the automation, **six of the eight people in the collections team were primarily dedicated to manual collection activities**. After the process was automated, two people remained responsible for supervising the automation and handling customer questions and exceptions.
+
+A complete collection cycle that previously took **weeks could now be executed in minutes**. The company subsequently saw a **reduction of more than 30% in delinquency**, as the new process made it possible to contact customers consistently and at the appropriate points throughout the collection cycle.
+
+For me, the impact was personal as well.
+
+Although this was the **first automation project of my career**, I was responsible for it end-to-end. As an intern, I independently handled the process analysis, requirements gathering, solution design, development, deployment, and ongoing maintenance.
+
+My ownership of the solution also outlasted my time at the company. I continued maintaining and supporting the automation for years after leaving, as the process remained part of their day-to-day operations.
+
+Seeing a relatively small automation fundamentally change an entire business process — and then remain valuable enough to keep running for years — was what made me want to become an **Automation Engineer**.
+
+The production implementation evolved within the company's environment over time. This repository does not reproduce that proprietary system. Instead, it is a **simplified and sanitized reconstruction** of its core architecture, rebuilt in Python so the engineering decisions behind the original solution can be inspected, tested, and discussed publicly.
+
 ## Overview
 
 The pipeline identifies pending customer debts, determines which ones should trigger a collection event, groups eligible debts by customer, prepares the complete communication, and delivers it through WhatsApp.
@@ -300,6 +326,8 @@ Create a `.env` file based on `.env.example`:
 
 ```env
 PIPELINE_MODE=demo
+
+DEMO_PHONE=5511999999999
 
 GALAXPAY_ID=
 GALAXPAY_HASH=
