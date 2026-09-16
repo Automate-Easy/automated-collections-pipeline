@@ -276,6 +276,33 @@ This keeps provider-specific concerns separated from business rules.
 
 ---
 
+## External API Documentation
+
+This project integrates with two external services. The implementations were built against their respective API documentation.
+
+### Galax Pay / Celcoin
+
+Used as the source of customer and pending transaction data.
+
+- API Documentation: [Galax Pay / Celcoin API](https://docs.prod.cloud.galaxpay.com.br/)
+- Transactions endpoint: [List Transactions](https://docs.prod.cloud.galaxpay.com.br/transactions/list)
+
+The integration uses OAuth 2.0 authentication and the `transactions.read` scope to retrieve pending transactions within the collection window.
+
+### Z-API
+
+Used as the WhatsApp delivery provider.
+
+- API Documentation: [Z-API Documentation](https://developer.z-api.io/)
+- Security / Authentication: [Security](https://developer.z-api.io/security/introduction)
+- Send Text Message: [Send Text](https://developer.z-api.io/message/send-text)
+- Send Copy-Code Button: [Send Button OTP](https://developer.z-api.io/message/send-button-otp)
+
+The `MessagePerformer` uses these endpoints to send the prepared customer message and each payment code while keeping delivery concerns isolated from the rest of the pipeline.
+
+---
+
+
 ## Demo and Real Modes
 
 The repository can be executed without access to the original corporate environment.
