@@ -445,3 +445,50 @@ This simplified implementation intentionally emphasizes:
 The purpose of this repository is **not to reproduce the full enterprise solution**.
 
 Its purpose is to provide a concise, sanitized implementation of the architecture and engineering principles behind a real automation system, making those decisions easy to inspect, run, test, and discuss.
+
+---
+
+## Production Evolution
+
+The implementation in this repository intentionally uses SQLite to keep the queue behavior, transactional boundaries, and idempotency mechanisms directly inspectable without requiring external infrastructure.
+
+For the original business volume, this approach is more than sufficient for demonstrating the architecture. However, in a larger distributed production environment, I would evolve the solution by separating **durable business state** from **work distribution**, while preserving the same architectural principles.
+
+### Durable State
+
+I would replace SQLite with a production-grade relational database such as **PostgreSQL, Azure SQL, or SQL Server**.
+
+The relational database would remain the system of record for:
+
+- Debt events and their processing state
+- Prepared customer communications
+- Idempotency keys
+- Delivery state and audit history
+- Transactional consistency between related business operations
+
+The important principle is that business state should remain durable and queryable independently of the mechanism used to distribute work.
+
+### Work Distribution
+
+Instead of using database tables as the only queue mechanism, work could be distributed through a message broker such as **Azure Service Bus, Amazon SQS, or RabbitMQ**.
+
+The broker would be responsible for concerns such as:
+
+- Horizontal worker scaling
+- Message acknowledgement
+- Redelivery after worker failures
+- Dead-letter queues
+- Load distribution across multiple consumers
+
+This would allow multiple instances of the dispatchers and performers to process work concurrently without making the message broker the source of truth for business state.
+
+### Preserving the Atomic Handoff
+
+One of the most important properties of the current implementation is the atomic handoff between the two processing stages.
+
+Today, the `MessageDispatcher` creates the customer message and marks its source debt events as `PROCESSED` within the same SQLite transaction.
+
+In a distributed architecture, publishing directly to an external message broker would introduce a consistency problem:
+
+```text
+Database commit succeeds → Broker publish fails
