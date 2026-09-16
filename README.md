@@ -28,7 +28,7 @@ software engineering concepts are visible directly in the code.
 
 ------------------------------------------------------------------------
 
-## Business Context --- Where My Automation Career Started
+## Business Context - Where My Automation Career Started
 
 This project has a special meaning to me because it reconstructs the
 architecture behind the **first automation I ever built**.
@@ -75,8 +75,8 @@ continued maintaining and supporting the automation for years after
 leaving, as the process remained part of their day-to-day operations.
 
 Seeing a relatively small automation fundamentally change an entire
-business process --- and then remain valuable enough to keep running for
-years --- was what made me want to become an **Automation Engineer**.
+business process - and then remain valuable enough to keep running for
+years - was what made me want to become an **Automation Engineer**.
 
 The production implementation evolved within the company's environment
 over time. This repository does not reproduce that proprietary system.
@@ -792,6 +792,6 @@ could use combinations such as:
   -------------------------------------------------------------------------
 
 The specific technologies are interchangeable. The architectural
-principles --- **durable state, idempotent consumers, transactional
+principles - **durable state, idempotent consumers, transactional
 handoff, reliable work distribution, and explicit failure ownership**
 --- are the important part.
